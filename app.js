@@ -9,7 +9,6 @@ const Cheerio = require('cheerio');
 const Async = require('async');
 const Request = require('request-promise');
 const CookieKit = require('tough-cookie-kit');
-const Etc2tc = require('etc2tc');
 const Moment = require('moment');
 const Bunyan = require('bunyan');
 const Inquirer = require('inquirer');
@@ -23,7 +22,7 @@ const Log = Bunyan.createLogger({
 // Log.trace, Log.debug, Log.info, Log.warn, Log.error, and Log.fatal
 
 
-let gCookies = Request.jar(new CookieKit(Etc2tc('cookies.txt', 'cookies.json')));
+let gCookies = Request.jar(new CookieKit('cookies.json'));
 const gRequest = Request.defaults({
     // 'proxy': 'http://8.8.8.8:8888',
     'gzip': true,
@@ -38,24 +37,18 @@ let gHeaders = {
     'Connection': 'keep-alive',
     'Pragma': 'no-cache',
     'Cache-Control': 'no-cache',
-    'Upgrade-Insecure-Requests': 1,
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.98 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Encoding': 'gzip, deflate, sdch, br',
     'Accept-Language': 'zh-CN,zh;q=0.8'
 };
 
+let gXsrfCode = null;
 
 main();
 
 function main() {
-    return getHtml('https://www.zhihu.com/', gHeaders).then(function(res) {
-        let $ = Cheerio.load(res.body);
-        $('.feed-title a').each(function(i, elem) {
-            console.log($(elem).text().trim());
-        });
-    });
-
+    return procMain();
     // let headers = _.assign({}, gHeaders, {
     //     'Origin': 'https://www.zhihu.com',
     //     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -77,6 +70,33 @@ function main() {
     // });
 }
 
+function procMain() {
+    return Async.waterfall([
+        function(done) {
+            return getLogin().then(function(res) {
+                gXsrfCode = getXsrfCode();
+                return done(null, res);
+            });
+        },
+        function(data, done) {
+            return postLogin('your email or phone_num', 'your password').then(function(res) {
+                return done(null, res);
+            });
+        }
+    ], function (err, res) {
+        return err ? console.log(Chalk.red(err)) : showTopics();
+    });
+}
+
+function showTopics() {
+    return getHtml('https://www.zhihu.com/', gHeaders).then(function(res) {
+        let $ = Cheerio.load(res.body);
+        $('.feed-title a').each(function(i, elem) {
+            console.log($(elem).text().trim());
+        });
+    });
+}
+
 function getXsrfCode() {
     let arrCookies = gCookies.getCookieString('https://www.zhihu.com').split('; ');
     for(let i = 0, len = arrCookies.length; i < len; i++) {
@@ -86,6 +106,37 @@ function getXsrfCode() {
         }
     }
     return null;
+}
+
+function getLogin() {
+    let headers = _.assign({}, gHeaders, {
+        'Upgrade-Insecure-Requests': 1
+    });
+
+    return getHtml('https://www.zhihu.com/', headers);
+}
+
+function postLogin(username, password) {
+    let headers = _.assign({}, gHeaders, {
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Origin': 'https://www.zhihu.com',
+        'Referer': 'https://www.zhihu.com/',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Xsrftoken': gXsrfCode
+    });
+
+    let form = {
+        '_xsrf': gXsrfCode,
+        'password': password,
+        'remember_me': true
+    };
+
+    let type = (username.indexOf('@') > -1) ? 'email' : 'phone_num';
+    form[type] = username;
+
+    return postForm(`https://www.zhihu.com/login/${type}`, headers, form);
 }
 
 function getHtml(url, headers, data) {
